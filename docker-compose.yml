@@ -1,0 +1,163 @@
+# Local end-to-end run of the app images on one network.
+#   docker compose up --build      # web http://localhost:8080
+#
+# Compose reads each app's .env (it strips quotes correctly, unlike `docker run --env-file`).
+# In-network service names override the localhost URLs from those .env files via `environment:`.
+#
+# Notes:
+# - `api` is the modular-monolith service: every domain module (currently
+#   job at /api/v1/jobs, user at /api/v1/users) runs in one process on
+#   :3002. It also calls the separately deployed mes-master-data service over
+#   HTTP for line, machine, SKU and count-point records, which compose does NOT
+#   start — point MASTER_DATA_BASE_URL at a reachable instance or the pickers
+#   return 502. The people pickers call Keycloak's admin API (see
+#   apps/api/README.md for the service-account roles it needs).
+# - api uses JOB_SCHEDULE_DATABASE_URL from apps/api/.env. Point it at a reachable
+#   database and run migrations separately: `pnpm --filter api db:migrate`.
+#   (An optional local `postgres` service is included under the `with-db`
+#   profile — enable with `--profile with-db` and set JOB_SCHEDULE_DATABASE_URL to
+#   postgres://postgres:postgres@postgres:5432/job_schedule.)
+# - Full OIDC login also needs the IdP's redirect URIs to match the web origin (http://localhost:8080).
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    # `.env` is gitignored and may not exist yet (copy it from your own template);
+    # required: false lets compose run without it, falling back to the values below.
+    env_file:
+      - path: apps/api/.env
+        required: false
+    environment:
+      PORT: 3002
+      OTEL_SERVICE_NAME: api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=molca,deployment.environment=docker
+      OTEL_METRIC_EXPORT_INTERVAL_MILLIS: 15000
+    depends_on:
+      - otel-collector
+    ports:
+      - "3002:3002"
+
+  bff:
+    build:
+      context: .
+      dockerfile: apps/bff/Dockerfile
+    env_file:
+      - path: apps/bff/.env
+        required: false
+    environment:
+      PORT: 3001
+      # Reach the core domain API by its service name.
+      CORE_API_BASE_URL: http://api:3002
+      # After login, send the browser back to the web origin below.
+      CLIENT_BASE_REDIRECT_URI: http://localhost:8080/
+      OTEL_SERVICE_NAME: bff
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=molca,deployment.environment=docker
+      OTEL_METRIC_EXPORT_INTERVAL_MILLIS: 15000
+    depends_on:
+      - api
+      - otel-collector
+    ports:
+      - "3001:3001"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      BFF_UPSTREAM: http://bff:3001
+    depends_on:
+      - bff
+    ports:
+      - "8080:80"
+
+  # ---- Observability stack ----------------------------------------------
+  # Collector receives OTLP from bff + api, sends traces to Jaeger and
+  # exposes metrics for Prometheus.  Traces UI: http://localhost:16686
+  # Metrics UI: http://localhost:9090
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8889:8889" # Prometheus scrape endpoint
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Jaeger UI
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # The alert rules. Mounted separately from the scrape config so a rule
+      # change does not risk the config that finds the targets.
+      - ./prometheus-alerts.yml:/etc/prometheus/prometheus-alerts.yml:ro
+    ports:
+      - "9090:9090" # Prometheus UI (Alerts tab: http://localhost:9090/alerts)
+
+  # Dashboards over the metrics Prometheus scrapes. UI: http://localhost:3005
+  #
+  # WHY IT IS HERE AT ALL. shared/observability/metrics.ts has annotated every
+  # instrument with the PromQL that should page somebody since the day it was
+  # written, and until now NOTHING consumed any of it — the alerting design existed
+  # only as prose in code comments. Prometheus evaluates those rules now, and this
+  # is where a human looks at them. TODOS.md §39.
+  #
+  # PORT 3005, not 3000: `web` owns 3000 in dev and Grafana's own default is 3000,
+  # so the obvious choice collides with the app this dashboard is about.
+  #
+  # ANONYMOUS ADMIN, and that is fine ONLY because this compose file is a local
+  # development stack. It is not a deployment manifest — there is none in this
+  # repo — so anything derived from it for a real environment must put auth back.
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      # Land on the OEE dashboard rather than an empty home page.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/oee-service.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "3005:3000"
+    depends_on:
+      - prometheus
+
+  # Optional local databases. Enable with: docker compose --profile with-db up --build
+  #
+  # ONE DATABASE, not the template's two. The api owns the `job_schedule` schema
+  # and reads no telemetry, so there is no Silver tier here — see the note in
+  # apps/api/src/shared/config/config.ts.
+  #
+  # In production this points at the SAME instance as mes-oee-monitor's `oee`
+  # schema; locally it is its own throwaway container.
+  postgres:
+    image: postgres:18-alpine
+    profiles: ["with-db"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: job_schedule
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

@@ -1,0 +1,156 @@
+# Alert rules for mes-job-schedule.
+#
+# EVERY RULE HERE HAS A `// Alert on:` LINE BESIDE ITS INSTRUMENT in
+# apps/api/src/shared/observability/metrics.ts, and the two must stay in step.
+# That file is the reason each metric exists; this file is what makes it page
+# somebody. An instrument with an annotation and no rule here puts the codebase
+# back to describing an alerting design nobody implemented.
+#
+# THE HISTOGRAM TRAP, stated once: a histogram exports as `_bucket`, `_count` and
+# `_sum`, so a rule over one must name the bucket series. A counter keeps its
+# name exactly, `_total` included. The first version of the rules in the repo
+# this was derived from got that wrong and silently never fired.
+#
+# Nothing routes a firing alert anywhere yet — there is no Alertmanager in
+# docker-compose.yml. See TODOS.md.
+
+groups:
+  - name: job-schedule-service
+    interval: 30s
+    rules:
+      # ---- Upstream: mes-master-data ---------------------------------------
+      #
+      # Every picker in the create dialog is a master-data read. The service
+      # caches them and serves the last known good list during an outage, so the
+      # screen degrades rather than breaking — which is exactly why this needs an
+      # alert: without one, nothing on the screen says the catalogue is stale.
+      - alert: MasterDataRequestsFailing
+        expr: rate(master_data_requests_total{outcome!="ok"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbound calls to mes-master-data are failing"
+          description: >-
+            {{ $labels.master_data_operation }} is returning {{ $labels.outcome }}.
+            Line, machine and reason pickers are being served from cache; a
+            create will fail once the cached entry expires.
+
+      - alert: MasterDataSlow
+        expr: histogram_quantile(0.95, rate(master_data_request_duration_ms_bucket[5m])) > 2000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "mes-master-data p95 latency above 2s"
+          description: >-
+            The create dialog blocks on these reads when its cache is cold.
+
+      # The cache serving STALE data. Designed behaviour, and still worth seeing:
+      # a catalogue frozen for hours is how an operator ends up scheduling
+      # against a machine that was retired.
+      - alert: MasterDataServingStale
+        expr: rate(master_data_cache_total{outcome="stale"}[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Master-data catalogues are being served stale"
+          description: >-
+            Upstream has been unreachable long enough that {{ $labels.resource }}
+            is coming from the last known good value.
+
+      # ---- Time zones -------------------------------------------------------
+      #
+      # A job event's times are WALL-CLOCK in a site's zone. A zone that
+      # cannot be resolved at all blocks the write, which is the correct
+      # behaviour and a hard failure worth paging for — writing an event with a
+      # guessed zone would put every one of its occurrences at the wrong time.
+      - alert: TimeZoneUnresolvable
+        expr: rate(time_zone_resolutions_total{outcome="unresolvable"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A site time zone cannot be resolved"
+          description: >-
+            Jobs for scope {{ $labels.scope }} cannot be created:
+            the master-data hierarchy did not yield a zone.
+
+      # ---- This service's own domain ---------------------------------------
+      #
+      # AN INCOMPLETE SCHEDULE. The Calendar (shifts) and Gantt (plan) reads
+      # cap their row count; when this fires, somebody was shown a schedule with
+      # planned work MISSING from it. The browser renders a banner, so it is not
+      # silent to that user — it is silent to everyone else.
+      - alert: ScheduleTruncated
+        expr: rate(job_window_truncations_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Schedule reads are being truncated"
+          description: >-
+            {{ $labels.read }} read hit its row cap. Operators are seeing an
+            incomplete schedule.
+
+      # The leading indicator for the above. Every row becomes a DOM node, so a
+      # p99 in the thousands is a page nobody can scroll well before it is a
+      # request that gets cut short.
+      #
+      # `_bucket`, not the bare metric name — see the histogram note in the header.
+      - alert: ScheduleResponsesLarge
+        expr: histogram_quantile(0.99, rate(job_window_rows_bucket[15m])) > 4000
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Schedule reads are returning very large row counts"
+          description: >-
+            p99 is {{ $value | humanize }} rows per request.
+
+      # PLAN RESOLUTION IS SLOW. Every upload is resolved against master data
+      # twice (Preview, then Save); a cold cache and a slow upstream turn both
+      # into a spinner. `_bucket` — it is a histogram.
+      - alert: JobPlanResolveSlow
+        expr: histogram_quantile(0.95, rate(job_plan_resolve_duration_ms_bucket[15m])) > 10000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Resolving uploaded job plans is slow"
+          description: >-
+            p95 is {{ $value | humanize }} ms. Check master_data_request_duration_ms.
+
+      # THE PEOPLE PICKERS CANNOT ASK KEYCLOAK. `auth_error` is the shape of an
+      # unprovisioned service account (no realm-management view-users); it only
+      # surfaces when somebody opens the Create Job dialog, so without this it is
+      # reported by a planner rather than seen.
+      - alert: KeycloakUserDirectoryFailing
+        expr: rate(keycloak_requests_total{outcome!="ok"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Job people pickers cannot list users"
+          description: >-
+            Keycloak admin API outcome {{ $labels.outcome }}. For auth_error, grant
+            the service account realm-management view-users and view-realm.
+
+      # ---- The gate, once it is enabled ------------------------------------
+      #
+      # Ships DARK (see TODOS.md §3). The rollout trap: a role name Keycloak does
+      # not emit 403s only the WRITE paths, so reads keep working and the screen
+      # looks completely healthy right up to the moment somebody tries to
+      # schedule a job. This is how that is seen in minutes rather than
+      # when a planner reports it.
+      - alert: OperatorAuthorizationDenied
+        expr: rate(operator_authorization_denials_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Job writes are being refused by the role gate"
+          description: >-
+            {{ $labels.operation }} denied for role {{ $labels.role }}. If a role
+            was just enabled, check it is a REALM role — see shared/actor.ts.

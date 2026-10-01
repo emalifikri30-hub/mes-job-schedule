@@ -1,0 +1,471 @@
+{
+  "uid": "job-schedule-service",
+  "title": "Job Schedule \u2014 service",
+  "tags": ["mes", "job"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "editable": false,
+  "description": "Checked in at grafana/dashboards/job-schedule-service.json and provisioned read-only: a dashboard clicked together in the UI is lost on restart and cannot be reviewed. Every panel here corresponds to an instrument in apps/api/src/shared/observability/metrics.ts and, where it has an `// Alert on:` line, to a rule in prometheus-alerts.yml. Keep the three in step.",
+  "panels": [
+    {
+      "type": "row",
+      "title": "Schedule reads",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rows per schedule read (p50 / p95 / p99)",
+      "description": "Calendar (read=shifts) blocks and Gantt (read=plan) rows per request. Every row becomes a DOM node.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, read) (rate(job_window_rows_bucket[5m])))",
+          "legendFormat": "p50 {{read}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, read) (rate(job_window_rows_bucket[5m])))",
+          "legendFormat": "p95 {{read}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, read) (rate(job_window_rows_bucket[5m])))",
+          "legendFormat": "p99 {{read}}",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Truncated schedule reads (rate)",
+      "description": "NON-ZERO MEANS SOMEBODY WAS SHOWN AN INCOMPLETE SCHEDULE. The cap bounds memory; the browser shows a banner to that one user. This is how everyone else finds out.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (read) (rate(job_window_truncations_total[5m]))",
+          "legendFormat": "{{read}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Writes",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Job writes by operation and outcome",
+      "description": "Every row in job_schedule.jobs was entered by a named person through this API \u2014 there is no pipeline filling these tables \u2014 so this IS the write traffic, not a sample of it. rejected/conflict are planners being told no.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (operation, outcome) (rate(job_writes_total[5m]))",
+          "legendFormat": "{{operation}} {{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Role-gate outcomes",
+      "description": "The gate ships DARK. When a role is first enabled, a name Keycloak does not emit 403s only the write paths \u2014 reads keep working and the screen looks healthy. Watch denials here before enabling the next.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(operator_authorization_grants_total[5m])",
+          "legendFormat": "granted",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(operator_authorization_denials_total[5m])",
+          "legendFormat": "denied",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Upstream: mes-master-data",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbound requests by outcome",
+      "description": "Anything but `ok` degrades a picker in the create dialog.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(master_data_requests_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbound latency (p50 / p95)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, rate(master_data_request_duration_ms_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(master_data_request_duration_ms_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Reference cache outcomes",
+      "description": "`stale` is the designed fallback during an upstream outage \u2014 and a catalogue frozen for hours is how somebody schedules against a machine that was retired.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(master_data_cache_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Time-zone resolutions",
+      "description": "`unresolvable` BLOCKS a write, deliberately: an event stored with a guessed zone puts every one of its occurrences at the wrong time.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(time_zone_resolutions_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "HTTP",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate by status",
+      "description": "Emitted by @hono/otel, not by metrics.ts. Metric names follow the OTel semantic conventions this SDK version ships \u2014 check the actual series in Prometheus before editing this expression.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (http_status_code) (rate(http_server_duration_milliseconds_count[5m]))",
+          "legendFormat": "{{http_status_code}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Truncations (1h)",
+      "description": "Incomplete Calendar/Gantt reads shown in the last hour.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(job_window_truncations_total[1h]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Plan resolution & people directory",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Plan resolve latency (p50 / p95)",
+      "description": "Resolving an uploaded plan against master data (preview, create, update). Cold caches make this one upstream call per line and per machine.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 45
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(job_plan_resolve_duration_ms_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(job_plan_resolve_duration_ms_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Keycloak admin requests by outcome",
+      "description": "The job dialog's people pickers. auth_error = the service account lacks realm-management view-users / view-realm.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 45
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(keycloak_requests_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
